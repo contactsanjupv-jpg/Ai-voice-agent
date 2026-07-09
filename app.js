@@ -86,7 +86,7 @@ function generatePrompt({ businessName, businessDescription, hours, location, se
     (faqs ? '\nCOMMON Q&A:\n' + faqs + '\n' : '') +
     '\nHOW TO HANDLE CALLS:\n' +
     'STEP 1 - HELP FIRST: Respond helpfully. Answer questions directly if you know the answer. If not, say: I do not have that detail, our team can confirm. Have a real conversation. Do NOT rush to ask for name and number.\n' +
-    'STEP 2 - GET CONTACT INFO: Only after helping, say: I would love to have our team follow up, could I get your name? Then ask for their phone number. Once you have BOTH name AND phone say: Perfect [name], our team will call you back shortly. Goodbye!\n' +
+    'STEP 2 - GET CONTACT INFO: Only after helping, say: I would love to have our team follow up, could I get your name? Then ask for their phone number. When you say the phone number back to confirm it, always say each digit separately with hyphens, like 8-1-1-3-8-7-6-4-0-5, never as one big number. Once you have BOTH name AND phone say: Perfect [name], our team will call you back shortly. Goodbye!\n' +
     'RULES: Keep each response to 1-3 sentences. Never ask for name and phone until you have actually helped them first. Never make up information not listed above. Be warm, natural, and conversational.';
 }
 
