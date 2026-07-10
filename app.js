@@ -168,12 +168,14 @@ app.get('/logout', (req, res) => {
 app.get('/onboard', (req, res) => {
   const isLoggedIn = !!getOwner(req);
   const back = isLoggedIn ? '<a href="/dashboard" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;font-family:monospace;letter-spacing:1px;color:rgba(255,255,255,0.3);margin-bottom:32px">← Back</a>' : '';
+  const errorMsg = req.query.error ? '<div class="err">' + req.query.error + '</div>' : '';
   res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up</title><style>${CSS}</style></head>
 <body><div style="max-width:560px;margin:0 auto;padding:48px 24px">
 <div class="logo" style="margin-bottom:44px"><div class="dot"></div><div class="dot-sm"></div><div class="dot-sm"></div><span class="logo-text">AI Receptionist</span></div>
 ${back}
 <h1 style="font-size:24px;font-weight:400;color:#fff;margin-bottom:8px">Set up your receptionist</h1>
 <p style="font-size:13px;color:rgba(255,255,255,0.35);margin-bottom:40px;line-height:1.6">Tell us about your business. Your AI uses this to answer every call intelligently.</p>
+${errorMsg}
 <form method="POST" action="/onboard">
 <div class="field"><label>Business name <span class="req">*</span></label><input type="text" name="businessName" required placeholder="e.g. Htrz Modz Kochi"></div>
 <div class="field"><label>What does your business do? <span class="req">*</span></label><textarea name="businessDescription" required rows="3" placeholder="e.g. We sell bike accessories, spare parts, and offer bike servicing."></textarea></div>
