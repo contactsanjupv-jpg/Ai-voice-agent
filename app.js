@@ -1,4 +1,6 @@
 require('dotenv').config();
+const { WebSocketServer } = require('ws');
+const WebSocket = require('ws');
 const express = require('express');
 const twilio = require('twilio');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -46,32 +48,54 @@ async function getBusinessForNumber(num) {
 
 async function sendLeadNotification(business, callSid, history) {
   const transcript = history.filter(t => t.role !== 'system').map(t => (t.role === 'user' ? 'Customer' : 'Agent') + ': ' + t.text).join('\n');
-  const to = business.notification_phone || '+918113876408';
-  try {
-    const lines = transcript.split('\n');
-    let name = 'Unknown', phone = 'Unknown';
+  const lines = transcript.split('\n');
+  let name = 'Unknown', phone = 'Unknown';
+  for (const line of lines) {
+    if (line.startsWith('Customer:')) {
+      const text = line.replace('Customer:', '').trim();
+      if (/\d{7,}/.test(text)) phone = text;
+      else if (name === 'Unknown' && text.length < 40) name = text;
+    }
+  }
+  for (const line of lines) {
+    if (line.startsWith('Agent:')) {
+      const m = line.match(/\d(?:-\d){6,}/);
+      if (m) phone = m[0].replace(/-/g, '');
+    }
+  }
+  if (business.notification_phone) {
+    try {
+      await twilioClient.messages.create({ body: 'NEW LEAD - ' + business.business_name + '\nName: ' + name + '\nPhone: ' + phone, from: business.phone_number || '+15107670583', to: business.notification_phone });
+      console.log('SMS sent for call:', callSid);
+    } catch (e) { console.log('SMS failed:', e.message); }
+  } else {
+    console.log('No notification phone on file for', business.business_name, '- lead still saved, SMS skipped');
+  }
+  if (business.id) {
+    let n = '', p = '', w = '';
     for (const line of lines) {
       if (line.startsWith('Customer:')) {
         const text = line.replace('Customer:', '').trim();
-        if (/\d{7,}/.test(text)) phone = text;
-        else if (name === 'Unknown' && text.length < 40) name = text;
+        if (!w) w = text;
+        if (/\d{5,}/.test(text)) p = text;
       }
     }
-    await twilioClient.messages.create({ body: 'NEW LEAD - ' + business.business_name + '\nName: ' + name + '\nPhone: ' + phone, from: '+15107670583', to });
-    console.log('SMS sent for call:', callSid);
-    if (business.id) {
-      let n = '', p = '', w = '';
-      for (const line of lines) {
-        if (line.startsWith('Customer:')) {
-          const text = line.replace('Customer:', '').trim();
-          if (!w) w = text;
-          if (/\d{5,}/.test(text)) p = text;
-          else if (!n && text.length < 30) n = text;
-        }
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('Agent:') && /your name/i.test(lines[i]) && lines[i + 1] && lines[i + 1].startsWith('Customer:')) {
+        n = lines[i + 1].replace('Customer:', '').trim();
+        n = n.replace(/^(my name is|this is|it's|it is|i'm|i am|name's)\s+/i, '').trim();
       }
+    }
+    for (const line of lines) {
+      if (line.startsWith('Agent:')) {
+        const m = line.match(/\d(?:-\d){6,}/);
+        if (m) p = m[0].replace(/-/g, '');
+      }
+    }
+    try {
       await supabase.from('leads').insert([{ business_id: business.id, caller_name: n, caller_phone: p, what_they_need: w }]);
-    }
-  } catch (e) { console.log('SMS failed:', e.message); }
+    } catch (e) { console.log('Lead save failed:', e.message); }
+  }
 }
 
 function generatePrompt({ businessName, businessDescription, hours, location, services, pricing, bookings, faqs }) {
@@ -187,7 +211,7 @@ ${errorMsg}
 <div class="field"><label>Services you offer</label><textarea name="services" rows="2" placeholder="Helmets, riding jackets, gloves, spare parts, servicing"></textarea><p class="hint">The AI uses this to confirm what you do and don't offer</p></div>
 <div class="field"><label>Pricing ranges</label><input type="text" name="pricing" placeholder="Helmets from Rs 800, basic service from Rs 500"><p class="hint">Rough ranges help callers get useful answers</p></div>
 <div class="field"><label>Do you take bookings?</label><input type="text" name="bookings" placeholder="Yes, call us to book. Walk-ins welcome too."></div>
-<div class="field"><label>Notification phone</label><input type="text" name="notificationPhone" placeholder="+919778461144"><p class="hint">This number gets a text the moment a lead is captured</p></div>
+<div class="field"><label>Notification phone <span class="req">*</span></label><input type="text" name="notificationPhone" required placeholder="+919778461144"><p class="hint">This number gets a text the moment a lead is captured</p></div>
 <hr><div class="sec-lbl">FAQs</div>
 <div class="field"><label>Common questions and answers</label><textarea name="faqs" rows="5" placeholder="Q: Do you service all bike brands?&#10;A: Yes, all major brands."></textarea><p class="hint">The AI answers these directly on the call</p></div>
 <button class="submit-btn" type="submit">Create my receptionist</button>
@@ -196,12 +220,30 @@ ${errorMsg}
 
 app.post('/onboard', async (req, res) => {
   const { businessName, businessDescription, hours, location, services, pricing, bookings, faqs, notificationPhone } = req.body;
-  if (!businessName || !businessDescription || !hours) return res.redirect('/onboard?error=Please+fill+required+fields');
+  if (!businessName || !businessDescription || !hours || !notificationPhone) return res.redirect('/onboard?error=Please+fill+required+fields');
   const systemPrompt = generatePrompt({ businessName, businessDescription, hours, location, services, pricing, bookings, faqs });
   const ownerId = getOwner(req);
   const { data, error } = await supabase.from('businesses').insert([{ business_name: businessName, business_description: businessDescription, hours, system_prompt: systemPrompt, notification_phone: notificationPhone || null, owner_id: ownerId || null }]).select();
   if (error) { console.error(error); return res.redirect('/onboard?error=Something+went+wrong'); }
   console.log('Created:', data[0].business_name);
+
+  try {
+    const available = await twilioClient.availablePhoneNumbers('US').local.list({ limit: 1 });
+    if (available.length > 0) {
+      const purchased = await twilioClient.incomingPhoneNumbers.create({
+        phoneNumber: available[0].phoneNumber,
+        voiceUrl: 'https://' + req.headers.host + '/voice',
+        voiceMethod: 'POST'
+      });
+      await supabase.from('businesses').update({ phone_number: purchased.phoneNumber }).eq('id', data[0].id);
+      console.log('Provisioned number', purchased.phoneNumber, 'for', data[0].business_name);
+    } else {
+      console.log('No available numbers found for', data[0].business_name);
+    }
+  } catch (e) {
+    console.log('Number provisioning failed:', e.message);
+  }
+
   res.redirect('/dashboard');
 });
 
@@ -325,6 +367,14 @@ app.post('/voice', async (req, res) => {
   res.type('text/xml').send(twiml.toString());
 });
 
+app.post('/voice-test', (req, res) => {
+  const twiml = new twilio.twiml.VoiceResponse();
+  const connect = twiml.connect();
+  const stream = connect.stream({ url: 'wss://' + req.headers.host + '/twilio-stream' });
+  stream.parameter({ name: 'to', value: req.body.To });
+  res.type('text/xml').send(twiml.toString());
+});
+
 app.post('/respond', async (req, res) => {
   const callSid = req.body.CallSid;
   const speech = req.body.SpeechResult || '';
@@ -376,7 +426,109 @@ app.post('/respond', async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.redirect('/signup'));
+app.get('/', (req, res) => {
+  const content = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Receptionist — Never miss a customer call again</title><style>${CSS}
+.hero{max-width:720px;margin:0 auto;padding:100px 24px 60px;text-align:center}
+.hero h1{font-size:40px;font-weight:400;line-height:1.25;margin-bottom:20px}
+.hero p{font-size:16px;color:rgba(255,255,255,0.45);line-height:1.6;max-width:520px;margin:0 auto 36px}
+.hero-ctas{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
+.hero-note{font-size:11px;font-family:monospace;letter-spacing:1px;color:rgba(255,255,255,0.2);text-transform:uppercase}
+.steps{max-width:900px;margin:80px auto;padding:0 24px;display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.step{background:rgba(255,255,255,0.03);border:0.5px solid rgba(255,255,255,0.07);border-radius:8px;padding:28px}
+.step-num{font-family:monospace;font-size:11px;letter-spacing:2px;color:rgba(255,255,255,0.25);margin-bottom:14px}
+.step h3{font-size:16px;font-weight:500;margin-bottom:8px}
+.step p{font-size:13px;color:rgba(255,255,255,0.4);line-height:1.6}
+.for-who{text-align:center;padding:0 24px 100px}
+.for-who-label{font-size:9px;letter-spacing:3px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.2);margin-bottom:20px}
+.tags{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;max-width:640px;margin:0 auto}
+@media(max-width:700px){.steps{grid-template-columns:1fr}.hero h1{font-size:30px}}
+</style></head>
+<body>
+<div class="header">
+  <a href="/" class="logo"><div class="dot"></div><div class="dot-sm"></div><div class="dot-sm"></div><span class="logo-text">AI Receptionist</span></a>
+  <div class="header-right">
+    <a href="/login" class="btn">Sign in</a>
+    <a href="/signup" class="btn primary">Get started free</a>
+  </div>
+</div>
+<div class="hero">
+  <h1>Never miss a customer call again.</h1>
+  <p>Your AI receptionist answers every call, has a real conversation, and texts you the lead the moment it hangs up. No scripts to write, no APIs to configure — just fill in your business details and it works.</p>
+  <div class="hero-ctas"><a href="/signup" class="btn primary">Get your AI receptionist free</a></div>
+  <div class="hero-note">Live in under 10 minutes · No credit card required</div>
+</div>
+<div class="steps">
+  <div class="step"><div class="step-num">01</div><h3>Tell us about your business</h3><p>Hours, services, pricing, FAQs — one simple form, no technical setup.</p></div>
+  <div class="step"><div class="step-num">02</div><h3>Get your number</h3><p>A dedicated phone number, live instantly, answering calls as your business.</p></div>
+  <div class="step"><div class="step-num">03</div><h3>Never miss a lead</h3><p>Every caller gets helped, every lead gets captured, you get a text the moment it happens.</p></div>
+</div>
+<div class="for-who">
+  <div class="for-who-label">Built for owner-operated businesses</div>
+  <div class="tags"><span class="tag">Salons</span><span class="tag">Gyms</span><span class="tag">Bike shops</span><span class="tag">Dental clinics</span><span class="tag">Home services</span><span class="tag">Real estate</span></div>
+</div>
+</body></html>`;
+  res.send(content);
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('App running on port ' + PORT));
+const server = app.listen(PORT, () => console.log('App running on port ' + PORT));
+
+const wss = new WebSocketServer({ server, path: '/twilio-stream' });
+wss.on('connection', (twilioWs) => {
+  console.log('Twilio stream connected');
+  let streamSid = null;
+  let business = null;
+  let dgReady = false;
+
+  const dgWs = new WebSocket('wss://agent.deepgram.com/v1/agent/converse', {
+    headers: { Authorization: 'Token ' + process.env.DEEPGRAM_API_KEY }
+  });
+
+  function trySendSettings() {
+    if (!dgReady || !business) return;
+    const prompt = business.system_prompt || 'You are a helpful voice assistant. Ask what the caller needs, get their name and phone number, then say goodbye.';
+    dgWs.send(JSON.stringify({
+      type: 'Settings',
+      audio: {
+        input: { encoding: 'mulaw', sample_rate: 8000 },
+        output: { encoding: 'mulaw', sample_rate: 8000, container: 'none' }
+      },
+      agent: {
+        listen: { provider: { type: 'deepgram', model: 'nova-3' } },
+        think: { provider: { type: 'google', model: 'gemini-3.1-flash-lite' }, prompt: prompt },
+        speak: { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
+        greeting: 'Hello! Thanks for calling ' + business.business_name + '. How can I help you today?'
+      }
+    }));
+    console.log('Settings sent for', business.business_name);
+  }
+
+  dgWs.on('open', () => { console.log('Deepgram connected'); dgReady = true; trySendSettings(); });
+
+  dgWs.on('message', (msg, isBinary) => {
+    if (isBinary) {
+      if (streamSid) twilioWs.send(JSON.stringify({ event: 'media', streamSid, media: { payload: msg.toString('base64') } }));
+      return;
+    }
+    const data = JSON.parse(msg);
+    console.log('Deepgram event:', data.type, data.description || '');
+  });
+
+  dgWs.on('error', (e) => console.log('Deepgram WS error:', e.message));
+
+  twilioWs.on('message', async (msg) => {
+    const data = JSON.parse(msg);
+    if (data.event === 'start') {
+      streamSid = data.start.streamSid;
+      const toNumber = data.start.customParameters?.to;
+      console.log('Stream started for number:', toNumber);
+      business = await getBusinessForNumber(toNumber);
+      trySendSettings();
+    } else if (data.event === 'media') {
+      if (dgWs.readyState === WebSocket.OPEN) dgWs.send(Buffer.from(data.media.payload, 'base64'));
+    } else {
+      console.log('Stream event:', data.event);
+    }
+  });
+  twilioWs.on('close', () => { console.log('Twilio stream closed'); dgWs.close(); });
+});
