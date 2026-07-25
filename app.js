@@ -3,9 +3,7 @@ const { WebSocketServer } = require('ws');
 const WebSocket = require('ws');
 const express = require('express');
 const twilio = require('twilio');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { createClient } = require('@supabase/supabase-js');
-const OpenAI = require('openai');
 
 const app = express();
 app.use(express.json());
@@ -13,35 +11,16 @@ app.use(express.urlencoded({ extended: true }));
 
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY);
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const fallbackModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
-const groq = new OpenAI({ apiKey: process.env.GROQ_API_KEY, baseURL: 'https://api.groq.com/openai/v1' });
-const deepseek = new OpenAI({ apiKey: process.env.DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' });
-
-async function generateWithFallback(history) {
-  try {
-    const r = await groq.chat.completions.create({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: history }] });
-    return r.choices[0].message.content.trim();
-  } catch (e) { console.log('Groq failed:', e.message); }
-  try {
-    const r = await fallbackModel.generateContent(history);
-    return r.response.text().trim();
-  } catch (e) { console.log('Gemini failed:', e.message); }
-  try {
-    const r = await deepseek.chat.completions.create({ model: 'deepseek-chat', messages: [{ role: 'user', content: history }] });
-    return r.choices[0].message.content.trim();
-  } catch (e) { console.log('DeepSeek failed:', e.message); throw e; }
-}
 
 async function getBusinessForNumber(num) {
   const n = num.startsWith('+') ? num : '+' + num;
   console.log('Looking up:', n);
-  let { data } = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone').eq('phone_number', n).single();
+  let { data } = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone,phone_number').eq('phone_number', n).single();
   if (!data) {
-    const r = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone').eq('phone_number', n.replace('+', '')).single();
+    const r = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone,phone_number').eq('phone_number', n.replace('+', '')).single();
     data = r.data;
   }
-  if (!data) return { id: null, business_name: 'this business', system_prompt: null, notification_phone: null };
+  if (!data) return { id: null, business_name: 'this business', system_prompt: null, notification_phone: null, phone_number: null };
   console.log('Found:', data.business_name);
   return data;
 }
@@ -351,79 +330,13 @@ app.get('/billing', (req, res) => {
   res.send(layout('billing', content));
 });
 
-// VOICE AGENT
-const conversations = {};
-
-app.post('/voice', async (req, res) => {
-  const callSid = req.body.CallSid;
-  const business = await getBusinessForNumber(req.body.To);
-  const prompt = business.system_prompt || 'You are a helpful voice assistant. Ask what the caller needs, get their name and phone number, then say goodbye.';
-  conversations[callSid] = { business, history: [{ role: 'system', text: prompt }] };
-  const twiml = new twilio.twiml.VoiceResponse();
-  const g = twiml.gather({ input: 'speech', action: '/respond', speechTimeout: 'auto', language: 'en-IN' });
-  g.say({ voice: 'Polly.Aditi' }, 'Hello! How can I help you today?');
-  twiml.say({ voice: 'Polly.Aditi' }, "Sorry, I didn't hear anything. Please call back when you're ready.");
-  twiml.hangup();
-  res.type('text/xml').send(twiml.toString());
-});
-
-app.post('/voice-test', (req, res) => {
+// VOICE AGENT — Twilio Media Streams bridged to Deepgram Voice Agent
+app.post('/voice', (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
   const connect = twiml.connect();
   const stream = connect.stream({ url: 'wss://' + req.headers.host + '/twilio-stream' });
   stream.parameter({ name: 'to', value: req.body.To });
   res.type('text/xml').send(twiml.toString());
-});
-
-app.post('/respond', async (req, res) => {
-  const callSid = req.body.CallSid;
-  const speech = req.body.SpeechResult || '';
-  const twiml = new twilio.twiml.VoiceResponse();
-  if (!speech) {
-    const g = twiml.gather({ input: 'speech', action: '/respond', speechTimeout: 'auto', language: 'en-IN' });
-    g.say({ voice: 'Polly.Aditi' }, "Sorry, I didn't catch that. Could you say that again?");
-    twiml.say({ voice: 'Polly.Aditi' }, 'Thanks for calling. Goodbye!');
-    twiml.hangup();
-    res.type('text/xml'); return res.send(twiml.toString());
-  }
-  if (!conversations[callSid]) {
-    const business = await getBusinessForNumber(req.body.To);
-    const prompt = business.system_prompt || 'You are a helpful voice assistant. Ask what the caller needs, get their name and phone number, then say goodbye.';
-    conversations[callSid] = { business, history: [{ role: 'system', text: prompt }] };
-  }
-  const { business, history } = conversations[callSid];
-  history.push({ role: 'user', text: speech });
-  if (history.length > 12) {
-    const ft = new twilio.twiml.VoiceResponse();
-    ft.say({ voice: 'Polly.Aditi' }, 'Thanks for calling, our team will call you back. Goodbye!');
-    ft.hangup();
-    sendLeadNotification(business, callSid, history);
-    delete conversations[callSid];
-    res.type('text/xml'); return res.send(ft.toString());
-  }
-  try {
-    const histText = history.map(t => t.role === 'system' ? t.text : (t.role === 'user' ? 'Caller' : 'Assistant') + ': ' + t.text).join('\n');
-    const reply = await generateWithFallback(histText);
-    history.push({ role: 'assistant', text: reply });
-    if (/goodbye/i.test(reply)) {
-      twiml.say({ voice: 'Polly.Aditi' }, reply);
-      twiml.hangup();
-      sendLeadNotification(business, callSid, history);
-      delete conversations[callSid];
-    } else {
-      const g = twiml.gather({ input: 'speech', action: '/respond', speechTimeout: 'auto', language: 'en-IN' });
-      g.say({ voice: 'Polly.Aditi' }, reply);
-      twiml.say({ voice: 'Polly.Aditi' }, 'Thanks for calling. Goodbye!');
-      twiml.hangup();
-    }
-    res.type('text/xml').send(twiml.toString());
-  } catch (e) {
-    console.error('AI error:', e);
-    const et = new twilio.twiml.VoiceResponse();
-    et.say({ voice: 'Polly.Aditi' }, 'Sorry, we are having a small technical issue. Please call back in a moment.');
-    et.hangup();
-    res.type('text/xml').send(et.toString());
-  }
 });
 
 app.get('/', (req, res) => {
@@ -479,6 +392,8 @@ wss.on('connection', (twilioWs) => {
   let streamSid = null;
   let business = null;
   let dgReady = false;
+  let history = [];
+  let callSid = null;
 
   const dgWs = new WebSocket('wss://agent.deepgram.com/v1/agent/converse', {
     headers: { Authorization: 'Token ' + process.env.DEEPGRAM_API_KEY }
@@ -512,6 +427,9 @@ wss.on('connection', (twilioWs) => {
     }
     const data = JSON.parse(msg);
     console.log('Deepgram event:', data.type, data.description || '');
+    if (data.type === 'ConversationText') {
+      history.push({ role: data.role, text: data.content });
+    }
   });
 
   dgWs.on('error', (e) => console.log('Deepgram WS error:', e.message));
@@ -520,6 +438,7 @@ wss.on('connection', (twilioWs) => {
     const data = JSON.parse(msg);
     if (data.event === 'start') {
       streamSid = data.start.streamSid;
+      callSid = data.start.callSid;
       const toNumber = data.start.customParameters?.to;
       console.log('Stream started for number:', toNumber);
       business = await getBusinessForNumber(toNumber);
@@ -530,5 +449,9 @@ wss.on('connection', (twilioWs) => {
       console.log('Stream event:', data.event);
     }
   });
-  twilioWs.on('close', () => { console.log('Twilio stream closed'); dgWs.close(); });
+  twilioWs.on('close', () => {
+    console.log('Twilio stream closed');
+    if (business && business.id) sendLeadNotification(business, callSid, history);
+    dgWs.close();
+  });
 });
