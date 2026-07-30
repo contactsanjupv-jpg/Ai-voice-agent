@@ -392,6 +392,7 @@ wss.on('connection', (twilioWs) => {
   let streamSid = null;
   let business = null;
   let dgReady = false;
+  let settingSent = false;
   let history = [];
   let callSid = null;
 
@@ -415,6 +416,7 @@ wss.on('connection', (twilioWs) => {
         greeting: 'Hello! Thanks for calling ' + business.business_name + '. How can I help you today?'
       }
     }));
+    settingSent = true;
     console.log('Settings sent for', business.business_name);
   }
 
@@ -444,7 +446,9 @@ wss.on('connection', (twilioWs) => {
       business = await getBusinessForNumber(toNumber);
       trySendSettings();
     } else if (data.event === 'media') {
-      if (dgWs.readyState === WebSocket.OPEN) dgWs.send(Buffer.from(data.media.payload, 'base64'));
+      if (dgWs.readyState === WebSocket.OPEN && settingsSent) {
+  dgWs.send(Buffer.from(data.media.payload, 'base64'));
+}
     } else {
       console.log('Stream event:', data.event);
     }
