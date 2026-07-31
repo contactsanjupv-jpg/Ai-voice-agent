@@ -412,7 +412,17 @@ wss.on('connection', (twilioWs) => {
       },
       agent: {
         listen: { provider: { type: 'deepgram', model: 'nova-3' } },
-        think: { provider: { type: 'google', model: 'gemini-3.1-flash-lite' }, prompt: prompt },
+        think: {
+          provider: { type: 'google', model: 'gemini-3.1-flash-lite' },
+          prompt: prompt,
+          functions: [
+            {
+              name: 'end_call',
+              description: 'Hang up the phone call. Call this once the conversation has naturally wrapped up - right after the caller replies to your goodbye, or after a couple seconds if they go quiet instead.',
+              parameters: { type: 'object', properties: {}, required: [] }
+            }
+          ]
+        },
         speak: { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
         greeting: 'Hello! Thanks for calling ' + business.business_name + '. How can I help you today?'
       }
@@ -433,6 +443,16 @@ wss.on('connection', (twilioWs) => {
     if (data.type === 'SettingsApplied') settingsApplied = true;
     if (data.type === 'ConversationText') {
       history.push({ role: data.role, text: data.content });
+    }
+    if (data.type === 'FunctionCallRequest') {
+      for (const fn of data.functions) {
+        if (fn.name === 'end_call') {
+          dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'ok' }) }));
+          setTimeout(() => {
+            twilioClient.calls(callSid).update({ status: 'completed' }).catch(e => console.log('Hangup failed:', e.message));
+          }, 2000);
+        }
+      }
     }
   });
 
