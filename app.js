@@ -440,27 +440,33 @@ wss.on('connection', (twilioWs) => {
       if (streamSid) twilioWs.send(JSON.stringify({ event: 'media', streamSid, media: { payload: msg.toString('base64') } }));
       return;
     }
-    const data = JSON.parse(msg);
-    console.log('Deepgram event:', data.type, data.description || '');
-    if (data.type === 'SettingsApplied') settingsApplied = true;
-    if (data.type === 'ConversationText') {
-      history.push({ role: data.role, text: data.content });
-    }
-    if (data.type === 'FunctionCallRequest') {
-      for (const fn of data.functions) {
-        if (fn.name === 'end_call') {
-          const phoneConfirmed = history.some(h => h.role !== 'user' && /\d(?:-\d){6,}/.test(h.text));
-          if (phoneConfirmed) {
-            dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'ending call' }) }));
-            setTimeout(() => {
-              twilioClient.calls(callSid).update({ status: 'completed' }).catch(e => console.log('Hangup failed:', e.message));
-            }, 2000);
-          } else {
-            console.log('end_call blocked - phone not confirmed yet');
-            dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'not yet, you still need to confirm their phone number back to them digit by digit first' }) }));
+    try {
+      const data = JSON.parse(msg);
+      console.log('Deepgram event:', data.type, data.description || '');
+      if (data.type === 'SettingsApplied') settingsApplied = true;
+      if (data.type === 'ConversationText') {
+        history.push({ role: data.role, text: data.content });
+      }
+      if (data.type === 'FunctionCallRequest' && Array.isArray(data.functions)) {
+        for (const fn of data.functions) {
+          if (fn.name === 'end_call') {
+            const userGaveDigits = history.some(h => h.role === 'user' && /\d{5,}/.test(h.text || ''));
+            const agentConfirmedDigits = history.some(h => h.role !== 'user' && /\d(?:-\d){6,}/.test(h.text || ''));
+            const phoneConfirmed = userGaveDigits && agentConfirmedDigits;
+            if (phoneConfirmed) {
+              dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'ending call' }) }));
+              setTimeout(() => {
+                twilioClient.calls(callSid).update({ status: 'completed' }).catch(e => console.log('Hangup failed:', e.message));
+              }, 2000);
+            } else {
+              console.log('end_call blocked - phone not confirmed yet');
+              dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'not yet, you still need to confirm their phone number back to them digit by digit first' }) }));
+            }
           }
         }
       }
+    } catch (e) {
+      console.log('Error handling Deepgram message:', e.message);
     }
   });
 
