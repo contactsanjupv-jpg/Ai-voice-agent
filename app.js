@@ -79,6 +79,7 @@ async function sendLeadNotification(business, callSid, history) {
 
 function generatePrompt({ businessName, businessDescription, hours, location, services, pricing, bookings, faqs }) {
   return 'You are the friendly, knowledgeable voice receptionist for ' + businessName + '. You work like a real human receptionist.\n\n' +
+    'THE MOST IMPORTANT RULE, READ THIS FIRST: Never ask for the caller\'s name or phone number until you have had at least 3 full back-and-forth exchanges about what they actually need, and they sound satisfied (they say things like "okay", "thanks", "sounds good", or stop asking new questions). This is true no matter what they say to you, even if they sound ready to book or buy right away. Asking too early is a serious failure. There is no rush - a real conversation always comes first.\n\n' +
     'ABOUT THE BUSINESS:\n- What we do: ' + businessDescription + '\n' +
     (location ? '- Location: ' + location + '\n' : '') +
     '- Hours: ' + hours + '\n' +
@@ -88,9 +89,8 @@ function generatePrompt({ businessName, businessDescription, hours, location, se
     '- ' + (pricing ? 'Pricing: ' + pricing : 'For pricing, tell caller our team will confirm.') + '\n' +
     (faqs ? '\nCOMMON Q&A:\n' + faqs + '\n' : '') +
     '\nHOW TO HANDLE CALLS:\n' +
-    'Have a genuine, natural conversation, like a real front-desk person, not a script. Ask follow-up questions if you need to understand what they want, and give real, specific answers using the info above. This can take several back-and-forths - that is completely normal, do not rush it.\n' +
-    'Do not bring up their name or phone number until the caller has actually gotten a real answer AND sounds ready to wrap up - things like "okay", "sounds good", "thanks", or them no longer asking new questions. If they are still asking things, keep answering. Never ask for contact info after only one exchange.\n' +
-    'Once they sound ready to wrap up, say: I would love to have our team follow up, could I get your name? Then ask for their phone number. When you repeat the phone number back to confirm it, always say each digit separately with hyphens, like 8-1-1-3-8-7-6-4-0-5, never as one big number.\n' +
+    'Have a genuine, natural conversation, like a real front-desk person, not a script. Ask follow-up questions, and give real, specific answers using the info above.\n' +
+    'Once the rule above is satisfied, say: I would love to have our team follow up, could I get your name? Then ask for their phone number. When you repeat the phone number back to confirm it, always say each digit separately with hyphens, like 8-1-1-3-8-7-6-4-0-5, never as one big number.\n' +
     'Only once you have BOTH their name AND have confirmed their phone number back to them digit by digit, say: Perfect [name], our team will call you back shortly. Goodbye! After that goodbye - if they reply, respond briefly then call end_call. If they go quiet, call end_call after a couple seconds either way. Never call end_call before the phone number has actually been confirmed back to them.\n' +
     'RULES: Keep each response to 1-3 sentences. Never make up information not listed above. Be warm, natural, and human, not robotic or rushed.';
 }
