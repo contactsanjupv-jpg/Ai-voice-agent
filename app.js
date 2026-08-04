@@ -13,6 +13,7 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY);
 
 async function getBusinessForNumber(num) {
+  if (!num) return { id: null, business_name: 'this business', system_prompt: null, notification_phone: null, phone_number: null };
   const n = num.startsWith('+') ? num : '+' + num;
   console.log('Looking up:', n);
   let { data } = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone,phone_number').eq('phone_number', n).single();
@@ -28,12 +29,19 @@ async function getBusinessForNumber(num) {
 async function sendLeadNotification(business, callSid, history) {
   const transcript = history.filter(t => t.role !== 'system').map(t => (t.role === 'user' ? 'Customer' : 'Agent') + ': ' + t.text).join('\n');
   const lines = transcript.split('\n');
-  let name = 'Unknown', phone = 'Unknown';
+
+  let name = 'Unknown', phone = 'Unknown', whatTheyNeed = 'Unknown';
   for (const line of lines) {
     if (line.startsWith('Customer:')) {
       const text = line.replace('Customer:', '').trim();
-      if (/\d{7,}/.test(text)) phone = text;
-      else if (name === 'Unknown' && text.length < 40) name = text;
+      if (whatTheyNeed === 'Unknown' && text.length > 12) whatTheyNeed = text;
+      if (/\d{5,}/.test(text)) phone = text;
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('Agent:') && /your name/i.test(lines[i]) && lines[i + 1] && lines[i + 1].startsWith('Customer:')) {
+      name = lines[i + 1].replace('Customer:', '').trim();
+      name = name.replace(/^(my name is|this is|it's|it is|i'm|i am|name's)\s+/i, '').trim();
     }
   }
   for (const line of lines) {
@@ -42,6 +50,7 @@ async function sendLeadNotification(business, callSid, history) {
       if (m) phone = m[0].replace(/-/g, '');
     }
   }
+
   if (business.notification_phone) {
     try {
       await twilioClient.messages.create({ body: 'NEW LEAD - ' + business.business_name + '\nName: ' + name + '\nPhone: ' + phone, from: business.phone_number || '+15107670583', to: business.notification_phone });
@@ -50,30 +59,16 @@ async function sendLeadNotification(business, callSid, history) {
   } else {
     console.log('No notification phone on file for', business.business_name, '- lead still saved, SMS skipped');
   }
+
   if (business.id) {
-    let n = '', p = '', w = '';
-    for (const line of lines) {
-      if (line.startsWith('Customer:')) {
-        const text = line.replace('Customer:', '').trim();
-        if (!w) w = text;
-        if (/\d{5,}/.test(text)) p = text;
-      }
-    }
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('Agent:') && /your name/i.test(lines[i]) && lines[i + 1] && lines[i + 1].startsWith('Customer:')) {
-        n = lines[i + 1].replace('Customer:', '').trim();
-        n = n.replace(/^(my name is|this is|it's|it is|i'm|i am|name's)\s+/i, '').trim();
-      }
-    }
-    for (const line of lines) {
-      if (line.startsWith('Agent:')) {
-        const m = line.match(/\d(?:-\d){6,}/);
-        if (m) p = m[0].replace(/-/g, '');
-      }
-    }
-    try {
-      await supabase.from('leads').insert([{ business_id: business.id, caller_name: n, caller_phone: p, what_they_need: w }]);
-    } catch (e) { console.log('Lead save failed:', e.message); }
+    const { error: leadError } = await supabase.from('leads').insert([{
+      business_id: business.id,
+      caller_name: name === 'Unknown' ? '' : name,
+      caller_phone: phone === 'Unknown' ? '' : phone,
+      what_they_need: whatTheyNeed === 'Unknown' ? '' : whatTheyNeed
+    }]);
+    if (leadError) console.log('Lead save failed:', leadError.message);
+    else console.log('Lead saved for call:', callSid);
   }
 }
 
@@ -396,6 +391,7 @@ wss.on('connection', (twilioWs) => {
   let dgReady = false;
   let settingsSent = false;
   let settingsApplied = false;
+  let endCallAttempts = 0;
   let history = [];
   let callSid = null;
 
@@ -450,16 +446,16 @@ wss.on('connection', (twilioWs) => {
       if (data.type === 'FunctionCallRequest' && Array.isArray(data.functions)) {
         for (const fn of data.functions) {
           if (fn.name === 'end_call') {
-            const userGaveDigits = history.some(h => h.role === 'user' && /\d{5,}/.test(h.text || ''));
+            endCallAttempts++;
             const agentConfirmedDigits = history.some(h => h.role !== 'user' && /\d(?:-\d){6,}/.test(h.text || ''));
-            const phoneConfirmed = userGaveDigits && agentConfirmedDigits;
+            const phoneConfirmed = agentConfirmedDigits || endCallAttempts >= 3;
             if (phoneConfirmed) {
               dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'ending call' }) }));
               setTimeout(() => {
                 twilioClient.calls(callSid).update({ status: 'completed' }).catch(e => console.log('Hangup failed:', e.message));
               }, 2000);
             } else {
-              console.log('end_call blocked - phone not confirmed yet');
+              console.log('end_call blocked - phone not confirmed yet, attempt', endCallAttempts);
               dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'not yet, you still need to confirm their phone number back to them digit by digit first' }) }));
             }
           }
@@ -473,23 +469,27 @@ wss.on('connection', (twilioWs) => {
   dgWs.on('error', (e) => console.log('Deepgram WS error:', e.message));
 
   twilioWs.on('message', async (msg) => {
-    const data = JSON.parse(msg);
-    if (data.event === 'start') {
-      streamSid = data.start.streamSid;
-      callSid = data.start.callSid;
-      const toNumber = data.start.customParameters?.to;
-      console.log('Stream started for number:', toNumber);
-      business = await getBusinessForNumber(toNumber);
-      trySendSettings();
-    } else if (data.event === 'media') {
-      if (settingsApplied && dgWs.readyState === WebSocket.OPEN) dgWs.send(Buffer.from(data.media.payload, 'base64'));
-    } else {
-      console.log('Stream event:', data.event);
+    try {
+      const data = JSON.parse(msg);
+      if (data.event === 'start') {
+        streamSid = data.start.streamSid;
+        callSid = data.start.callSid;
+        const toNumber = data.start.customParameters?.to;
+        console.log('Stream started for number:', toNumber);
+        business = await getBusinessForNumber(toNumber);
+        trySendSettings();
+      } else if (data.event === 'media') {
+        if (settingsApplied && dgWs.readyState === WebSocket.OPEN) dgWs.send(Buffer.from(data.media.payload, 'base64'));
+      } else {
+        console.log('Stream event:', data.event);
+      }
+    } catch (e) {
+      console.log('Error handling Twilio message:', e.message);
     }
   });
   twilioWs.on('close', () => {
     console.log('Twilio stream closed');
-    if (business && business.id) sendLeadNotification(business, callSid, history);
+    if (business && business.id) sendLeadNotification(business, callSid, history).catch(e => console.log('sendLeadNotification error:', e.message));
     dgWs.close();
   });
 });
