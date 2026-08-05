@@ -440,6 +440,9 @@ wss.on('connection', (twilioWs) => {
       const data = JSON.parse(msg);
       console.log('Deepgram event:', data.type, data.description || '');
       if (data.type === 'SettingsApplied') settingsApplied = true;
+      if (data.type === 'UserStartedSpeaking' && streamSid) {
+  twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
+}
       if (data.type === 'ConversationText') {
         history.push({ role: data.role, text: data.content });
       }
