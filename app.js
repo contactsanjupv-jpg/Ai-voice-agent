@@ -456,7 +456,7 @@ wss.on('connection', (twilioWs) => {
               dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'ending call' }) }));
               setTimeout(() => {
                 twilioClient.calls(callSid).update({ status: 'completed' }).catch(e => console.log('Hangup failed:', e.message));
-              }, 2000);
+              }, 4500);
             } else {
               console.log('end_call blocked - phone not confirmed yet, attempt', endCallAttempts);
               dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'not yet, you still need to confirm their phone number back to them digit by digit first' }) }));
