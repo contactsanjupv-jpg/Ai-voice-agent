@@ -417,6 +417,7 @@ wss.on('connection', (twilioWs) => {
   let settingsSent = false;
   let settingsApplied = false;
   let endCallAttempts = 0;
+  let callEnding = false;
   let history = [];
   let callSid = null;
 
@@ -475,17 +476,21 @@ wss.on('connection', (twilioWs) => {
         for (const fn of data.functions) {
           if (fn.name === 'end_call') {
             endCallAttempts++;
-            const agentConfirmedDigits = history.some(h => h.role !== 'user' && /\d(?:-\d){6,}/.test(h.text || ''));
-            const phoneConfirmed = agentConfirmedDigits || endCallAttempts >= 3;
-            if (phoneConfirmed) {
-              dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'ending call' }) }));
-              setTimeout(() => {
-                twilioClient.calls(callSid).update({ status: 'completed' }).catch(e => console.log('Hangup failed:', e.message));
-              }, 4500);
-            } else {
-              console.log('end_call blocked - phone not confirmed yet, attempt', endCallAttempts);
-              dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'not yet, you still need to confirm their phone number back to them digit by digit first' }) }));
-            }
+            const attemptNum = endCallAttempts;
+            setTimeout(() => {
+              const agentConfirmedDigits = history.some(h => h.role !== 'user' && /\d(?:-\d){6,}/.test(h.text || ''));
+              const phoneConfirmed = agentConfirmedDigits || attemptNum >= 3;
+              if (phoneConfirmed) {
+                callEnding = true;
+                dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'ending call' }) }));
+                setTimeout(() => {
+                  twilioClient.calls(callSid).update({ status: 'completed' }).catch(e => console.log('Hangup failed:', e.message));
+                }, 4500);
+              } else {
+                console.log('end_call blocked - phone not confirmed yet, attempt', attemptNum);
+                dgWs.send(JSON.stringify({ type: 'FunctionCallResponse', id: fn.id, name: fn.name, content: JSON.stringify({ status: 'not yet, you still need to confirm their phone number back to them digit by digit first' }) }));
+              }
+            }, 400);
           }
         }
       }
@@ -507,7 +512,7 @@ wss.on('connection', (twilioWs) => {
         business = await getBusinessForNumber(toNumber);
         trySendSettings();
       } else if (data.event === 'media') {
-        if (settingsApplied && dgWs.readyState === WebSocket.OPEN) dgWs.send(Buffer.from(data.media.payload, 'base64'));
+        if (settingsApplied && !callEnding && dgWs.readyState === WebSocket.OPEN) dgWs.send(Buffer.from(data.media.payload, 'base64'));
       } else {
         console.log('Stream event:', data.event);
       }
