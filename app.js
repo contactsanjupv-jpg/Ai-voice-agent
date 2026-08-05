@@ -65,7 +65,8 @@ async function sendLeadNotification(business, callSid, history) {
       business_id: business.id,
       caller_name: name === 'Unknown' ? '' : name,
       caller_phone: phone === 'Unknown' ? '' : phone,
-      what_they_need: whatTheyNeed === 'Unknown' ? '' : whatTheyNeed
+      what_they_need: whatTheyNeed === 'Unknown' ? '' : whatTheyNeed,
+      transcript: transcript
     }]);
     if (leadError) console.log('Lead save failed:', leadError.message);
     else console.log('Lead saved for call:', callSid);
@@ -244,7 +245,7 @@ app.get('/dashboard', async (req, res) => {
     : leads.map(l => {
         const d = new Date(l.created_at);
         const t = d.toLocaleDateString() === new Date().toLocaleDateString() ? d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : d.toLocaleDateString();
-        return '<tr><td><div class="caller-name">' + (l.caller_name||'Unknown') + '</div><div class="caller-phone">' + (l.caller_phone||'--') + '</div></td><td>' + (l.what_they_need||'--') + '</td><td><span class="tag">' + (bizMap[l.business_id]||'--') + '</span></td><td><div class="status"><div class="status-dot"></div>New</div></td><td class="time">' + t + '</td></tr>';
+        return '<tr onclick="location.href=\'/leads/' + l.id + '\'" style="cursor:pointer"><td><div class="caller-name">' + (l.caller_name||'Unknown') + '</div><div class="caller-phone">' + (l.caller_phone||'--') + '</div></td><td>' + (l.what_they_need||'--') + '</td><td><span class="tag">' + (bizMap[l.business_id]||'--') + '</span></td><td><div class="status"><div class="status-dot"></div>New</div></td><td class="time">' + t + '</td></tr>';
       }).join('');
   const bizHTML = businesses.length === 0
     ? '<div class="empty">No businesses yet. <a href="/onboard">Create your first one</a></div>'
@@ -285,8 +286,32 @@ app.get('/leads', async (req, res) => {
   }
   const rows = leads.length === 0
     ? '<tr><td colspan="5"><div class="empty">No leads yet.</div></td></tr>'
-    : leads.map(l => '<tr><td><div class="caller-name">' + (l.caller_name||'Unknown') + '</div><div class="caller-phone">' + (l.caller_phone||'--') + '</div></td><td>' + (l.what_they_need||'--') + '</td><td><span class="tag">' + (bizMap[l.business_id]||'--') + '</span></td><td><div class="status"><div class="status-dot"></div>New</div></td><td class="time">' + new Date(l.created_at).toLocaleString() + '</td></tr>').join('');
+    : leads.map(l => '<tr onclick="location.href=\'/leads/' + l.id + '\'" style="cursor:pointer"><td><div class="caller-name">' + (l.caller_name||'Unknown') + '</div><div class="caller-phone">' + (l.caller_phone||'--') + '</div></td><td>' + (l.what_they_need||'--') + '</td><td><span class="tag">' + (bizMap[l.business_id]||'--') + '</span></td><td><div class="status"><div class="status-dot"></div>New</div></td><td class="time">' + new Date(l.created_at).toLocaleString() + '</td></tr>').join('');
   const content = `<div class="page-title">All leads</div><div class="page-sub">${leads.length} TOTAL</div><table><thead><tr><th>Caller</th><th>Enquiry</th><th>Business</th><th>Status</th><th>Time</th></tr></thead><tbody>${rows}</tbody></table>`;
+  res.send(layout('leads', content));
+});
+
+// LEAD DETAIL — full transcript
+app.get('/leads/:id', async (req, res) => {
+  const ownerId = getOwner(req);
+  if (!ownerId) return res.redirect('/login');
+  const { data: lead } = await supabase.from('leads').select('*').eq('id', req.params.id).single();
+  if (!lead) return res.redirect('/leads');
+  const { data: biz } = await supabase.from('businesses').select('business_name,owner_id').eq('id', lead.business_id).single();
+  if (!biz || biz.owner_id !== ownerId) return res.redirect('/leads');
+  const transcriptLines = (lead.transcript || '').split('\n').filter(l => l.trim());
+  const transcriptHTML = transcriptLines.length === 0
+    ? '<div class="empty">No transcript saved for this call.</div>'
+    : transcriptLines.map(line => {
+        const isAgent = line.startsWith('Agent:');
+        const text = line.replace(/^(Agent:|Customer:)\s*/, '');
+        return '<div style="margin-bottom:14px"><div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:' + (isAgent ? 'rgba(120,180,255,0.6)' : 'rgba(255,255,255,0.35)') + '">' + (isAgent ? 'AI' : 'Caller') + '</div><div style="font-size:14px;color:rgba(255,255,255,0.75);margin-top:3px;line-height:1.5">' + text + '</div></div>';
+      }).join('');
+  const content = `<a href="/leads" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;font-family:monospace;letter-spacing:1px;color:rgba(255,255,255,0.3);margin-bottom:28px">← Back to leads</a>
+<div class="page-title">${lead.caller_name || 'Unknown caller'}</div>
+<div class="page-sub">${(lead.caller_phone || 'No number captured').toUpperCase()} · ${biz.business_name.toUpperCase()} · ${new Date(lead.created_at).toLocaleString().toUpperCase()}</div>
+<div class="biz-card" style="padding:24px;margin-bottom:20px;display:block"><div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.3);margin-bottom:10px">What they needed</div><div style="font-size:14px;color:rgba(255,255,255,0.7)">${lead.what_they_need || 'Not captured'}</div></div>
+<div class="biz-card" style="padding:24px;display:block"><div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.3);margin-bottom:20px">Full conversation</div>${transcriptHTML}</div>`;
   res.send(layout('leads', content));
 });
 
@@ -441,8 +466,8 @@ wss.on('connection', (twilioWs) => {
       console.log('Deepgram event:', data.type, data.description || '');
       if (data.type === 'SettingsApplied') settingsApplied = true;
       if (data.type === 'UserStartedSpeaking' && streamSid) {
-  twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
-}
+        twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
+      }
       if (data.type === 'ConversationText') {
         history.push({ role: data.role, text: data.content });
       }
