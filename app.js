@@ -343,12 +343,27 @@ app.get('/settings', (req, res) => {
 // BILLING
 app.get('/billing', (req, res) => {
   if (!getOwner(req)) return res.redirect('/login');
+  const stripeLink = process.env.STRIPE_PAYMENT_LINK || '';
+  const upgradeBtn = stripeLink
+    ? '<a href="' + stripeLink + '" class="btn primary" style="width:100%;justify-content:center">Upgrade to Pro</a>'
+    : '<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center">Coming soon</div>';
   const content = `<div class="page-title">Billing</div><div class="page-sub">PLAN AND USAGE</div>
-<div style="max-width:480px">
-<div class="biz-card" style="padding:28px">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px"><div><div style="font-size:16px;font-weight:500;margin-bottom:4px">Free plan</div><div style="font-size:13px;color:rgba(255,255,255,0.4)">Up to 1 business, 100 leads/month</div></div><div style="font-size:22px;font-weight:300;font-family:monospace">$0</div></div>
-<div style="border-top:0.5px solid rgba(255,255,255,0.08);padding-top:20px"><div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.25);margin-bottom:12px">Upgrade to Pro</div><div style="font-size:13px;color:rgba(255,255,255,0.4);margin-bottom:16px;line-height:1.7">Unlimited businesses, unlimited leads, priority support, and advanced analytics.</div><div class="btn" style="cursor:default;opacity:0.5;display:inline-flex">Coming soon</div></div>
-</div></div>`;
+<div style="max-width:760px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+<div class="biz-card" style="padding:28px;display:block">
+<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.3);margin-bottom:10px">Free</div>
+<div style="font-size:30px;font-weight:300;font-family:monospace;margin-bottom:4px">$0</div>
+<div style="font-size:12px;color:rgba(255,255,255,0.3);margin-bottom:24px">forever</div>
+<div style="font-size:13px;color:rgba(255,255,255,0.6);line-height:2.2">1 business<br>30 minutes / month included<br>Unlimited leads<br>Community support</div>
+<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center;margin-top:24px">Current plan</div>
+</div>
+<div class="biz-card" style="padding:28px;display:block;border-color:rgba(255,255,255,0.25)">
+<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.5);margin-bottom:10px">Pro</div>
+<div style="font-size:30px;font-weight:300;font-family:monospace;margin-bottom:4px">$39<span style="font-size:14px;color:rgba(255,255,255,0.3)">/mo</span></div>
+<div style="font-size:12px;color:rgba(255,255,255,0.3);margin-bottom:24px">$0.20/min after included minutes</div>
+<div style="font-size:13px;color:rgba(255,255,255,0.75);line-height:2.2">1 business<br>300 minutes / month included<br>Unlimited leads<br>Priority support</div>
+<div style="margin-top:24px">${upgradeBtn}</div>
+</div>
+</div>`;
   res.send(layout('billing', content));
 });
 
