@@ -13,17 +13,30 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY);
 
 async function getBusinessForNumber(num) {
-  if (!num) return { id: null, business_name: 'this business', system_prompt: null, notification_phone: null, phone_number: null };
+  if (!num) return { id: null, business_name: 'this business', system_prompt: null, notification_phone: null, phone_number: null, plan: 'free', minutes_used_this_month: 0, usage_reset_at: null };
   const n = num.startsWith('+') ? num : '+' + num;
   console.log('Looking up:', n);
-  let { data } = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone,phone_number').eq('phone_number', n).single();
+  let { data } = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone,phone_number,plan,minutes_used_this_month,usage_reset_at').eq('phone_number', n).single();
   if (!data) {
-    const r = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone,phone_number').eq('phone_number', n.replace('+', '')).single();
+    const r = await supabase.from('businesses').select('id,business_name,system_prompt,notification_phone,phone_number,plan,minutes_used_this_month,usage_reset_at').eq('phone_number', n.replace('+', '')).single();
     data = r.data;
   }
-  if (!data) return { id: null, business_name: 'this business', system_prompt: null, notification_phone: null, phone_number: null };
+  if (!data) return { id: null, business_name: 'this business', system_prompt: null, notification_phone: null, phone_number: null, plan: 'free', minutes_used_this_month: 0, usage_reset_at: null };
   console.log('Found:', data.business_name);
   return data;
+}
+
+function planLimitMinutes(plan) {
+  return plan === 'pro' ? 300 : 30;
+}
+
+async function resetUsageIfNewMonth(business) {
+  const resetAt = business.usage_reset_at ? new Date(business.usage_reset_at) : new Date(0);
+  const now = new Date();
+  if (resetAt.getMonth() !== now.getMonth() || resetAt.getFullYear() !== now.getFullYear()) {
+    business.minutes_used_this_month = 0;
+    await supabase.from('businesses').update({ minutes_used_this_month: 0, usage_reset_at: now.toISOString() }).eq('id', business.id);
+  }
 }
 
 async function sendLeadNotification(business, callSid, history) {
@@ -368,7 +381,19 @@ app.get('/billing', (req, res) => {
 });
 
 // VOICE AGENT — Twilio Media Streams bridged to Deepgram Voice Agent
-app.post('/voice', (req, res) => {
+app.post('/voice', async (req, res) => {
+  const business = await getBusinessForNumber(req.body.To);
+  if (business.id) {
+    await resetUsageIfNewMonth(business);
+    const limit = planLimitMinutes(business.plan);
+    if ((business.minutes_used_this_month || 0) >= limit) {
+      console.log('Call rejected - over plan limit:', business.business_name);
+      const twiml = new twilio.twiml.VoiceResponse();
+      twiml.say('Sorry, we are unable to take your call right now. Please try again later.');
+      twiml.hangup();
+      return res.type('text/xml').send(twiml.toString());
+    }
+  }
   const twiml = new twilio.twiml.VoiceResponse();
   const connect = twiml.connect();
   const stream = connect.stream({ url: 'wss://' + req.headers.host + '/twilio-stream' });
@@ -435,6 +460,7 @@ wss.on('connection', (twilioWs) => {
   let callEnding = false;
   let history = [];
   let callSid = null;
+  let callStartTime = null;
 
   const dgWs = new WebSocket('wss://agent.deepgram.com/v1/agent/converse', {
     headers: { Authorization: 'Token ' + process.env.DEEPGRAM_API_KEY }
@@ -522,6 +548,7 @@ wss.on('connection', (twilioWs) => {
       if (data.event === 'start') {
         streamSid = data.start.streamSid;
         callSid = data.start.callSid;
+        callStartTime = Date.now();
         const toNumber = data.start.customParameters?.to;
         console.log('Stream started for number:', toNumber);
         business = await getBusinessForNumber(toNumber);
@@ -537,7 +564,14 @@ wss.on('connection', (twilioWs) => {
   });
   twilioWs.on('close', () => {
     console.log('Twilio stream closed');
-    if (business && business.id) sendLeadNotification(business, callSid, history).catch(e => console.log('sendLeadNotification error:', e.message));
+    if (business && business.id) {
+      const durationMin = callStartTime ? (Date.now() - callStartTime) / 60000 : 0;
+      const newTotal = (business.minutes_used_this_month || 0) + durationMin;
+      supabase.from('businesses').update({ minutes_used_this_month: newTotal }).eq('id', business.id)
+        .then(() => console.log('Usage updated:', newTotal.toFixed(2), 'min this month'))
+        .catch(e => console.log('Usage update failed:', e.message));
+      sendLeadNotification(business, callSid, history).catch(e => console.log('sendLeadNotification error:', e.message));
+    }
     dgWs.close();
   });
 });
