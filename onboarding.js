@@ -86,7 +86,7 @@ button:hover { opacity: 0.88; }
   <form method="POST" action="/onboard">
     <div class="field">
       <label>Business name <span class="req">*</span></label>
-      <input type="text" name="businessName" required placeholder="Htrz Modz Kochi">
+      <input type="text" name="businessName" required placeholder="">
     </div>
 
     <div class="field">
