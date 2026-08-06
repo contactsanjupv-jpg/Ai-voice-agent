@@ -198,19 +198,19 @@ ${back}
 <p style="font-size:13px;color:rgba(255,255,255,0.35);margin-bottom:40px;line-height:1.6">Tell us about your business. Your AI uses this to answer every call intelligently.</p>
 ${errorMsg}
 <form method="POST" action="/onboard">
-<div class="field"><label>Business name <span class="req">*</span></label><input type="text" name="businessName" required placeholder="e.g. Htrz Modz Kochi"></div>
-<div class="field"><label>What does your business do? <span class="req">*</span></label><textarea name="businessDescription" required rows="3" placeholder="e.g. We sell bike accessories, spare parts, and offer bike servicing."></textarea></div>
+<div class="field"><label>Business name <span class="req">*</span></label><input type="text" name="businessName" required placeholder=""></div>
+<div class="field"><label>What does your business do? <span class="req">*</span></label><textarea name="businessDescription" required rows="3" placeholder=""></textarea></div>
 <div class="row2">
-<div class="field"><label>Opening hours <span class="req">*</span></label><input type="text" name="hours" required placeholder="9 AM - 8 PM, Mon-Sat"></div>
-<div class="field"><label>Location</label><input type="text" name="location" placeholder="MG Road, Kochi"></div>
+<div class="field"><label>Opening & Closing hours <span class="req">*</span></label><input type="text" name="hours" required placeholder="9 AM - 8 PM, Mon-Sat"></div>
+<div class="field"><label>Location</label><input type="text" name="location" placeholder=""></div>
 </div>
 <hr><div class="sec-lbl">Services and pricing</div>
-<div class="field"><label>Services you offer</label><textarea name="services" rows="2" placeholder="Helmets, riding jackets, gloves, spare parts, servicing"></textarea><p class="hint">The AI uses this to confirm what you do and don't offer</p></div>
-<div class="field"><label>Pricing ranges</label><input type="text" name="pricing" placeholder="Helmets from Rs 800, basic service from Rs 500"><p class="hint">Rough ranges help callers get useful answers</p></div>
-<div class="field"><label>Do you take bookings?</label><input type="text" name="bookings" placeholder="Yes, call us to book. Walk-ins welcome too."></div>
-<div class="field"><label>Notification phone <span class="req">*</span></label><input type="text" name="notificationPhone" required placeholder="+919778461144"><p class="hint">This number gets a text the moment a lead is captured</p></div>
+<div class="field"><label>Services you offer</label><textarea name="services" rows="2" placeholder=""></textarea><p class="hint">The AI uses this to confirm what you do and don't offer</p></div>
+<div class="field"><label>Pricing ranges</label><input type="text" name="pricing" placeholder=""><p class="hint">Rough ranges help callers get useful answers</p></div>
+<div class="field"><label>Do you take bookings?</label><input type="text" name="bookings" placeholder=""></div>
+<div class="field"><label>Notification phone <span class="req">*</span></label><input type="text" name="notificationPhone" required placeholder=""><p class="hint">This number gets a text the moment a lead is captured</p></div>
 <hr><div class="sec-lbl">FAQs</div>
-<div class="field"><label>Common questions and answers</label><textarea name="faqs" rows="5" placeholder="Q: Do you service all bike brands?&#10;A: Yes, all major brands."></textarea><p class="hint">The AI answers these directly on the call</p></div>
+<div class="field"><label>Common questions and answers</label><textarea name="faqs" rows="5" placeholder=""></textarea><p class="hint">The AI answers these directly on the call</p></div>
 <button class="submit-btn" type="submit">Create my receptionist</button>
 </form></div></body></html>`);
 });
