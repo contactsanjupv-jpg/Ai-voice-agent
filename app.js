@@ -27,7 +27,14 @@ async function getBusinessForNumber(num) {
 }
 
 function planLimitMinutes(plan) {
-  return plan === 'pro' ? 300 : 30;
+  if (plan === 'growth') return 400;
+  if (plan === 'pro') return 1000;
+  return 150; // starter - cheapest paid tier, also the default for new signups
+}
+function planLabel(plan) {
+  if (plan === 'growth') return 'Growth';
+  if (plan === 'pro') return 'Pro';
+  return 'Starter';
 }
 
 async function resetUsageIfNewMonth(business) {
@@ -354,28 +361,39 @@ app.get('/settings', (req, res) => {
 });
 
 // BILLING
-app.get('/billing', (req, res) => {
-  if (!getOwner(req)) return res.redirect('/login');
+app.get('/billing', async (req, res) => {
+  const ownerId = getOwner(req);
+  if (!ownerId) return res.redirect('/login');
+  const { data: biz } = await supabase.from('businesses').select('id,business_name,plan,minutes_used_this_month').eq('owner_id', ownerId).order('created_at', { ascending: false }).limit(1).single();
+  const currentPlan = biz ? (biz.plan || 'starter') : 'starter';
+  const used = biz ? (biz.minutes_used_this_month || 0) : 0;
+  const limit = planLimitMinutes(currentPlan);
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  const usageHTML = biz ? `
+<div class="biz-card" style="padding:24px;margin-bottom:20px;display:block;max-width:400px">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-size:13px;color:rgba(255,255,255,0.6)">${planLabel(currentPlan)} plan</div><div style="font-size:12px;font-family:monospace;color:rgba(255,255,255,0.4)">${used.toFixed(1)} / ${limit} min used</div></div>
+<div style="height:6px;border-radius:3px;background:rgba(255,255,255,0.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:${pct>=100?'rgba(255,107,107,0.7)':'rgba(255,255,255,0.5)'}"></div></div>
+<div style="font-size:11px;color:rgba(255,255,255,0.25);margin-top:8px">Resets on the 1st of each month${pct>=100?' · calls are currently paused until reset or upgrade':''}</div>
+</div>` : '<div class="empty" style="max-width:400px;margin-bottom:20px">No business yet - create one to start tracking usage.</div>';
   const stripeLink = process.env.STRIPE_PAYMENT_LINK || '';
-  const upgradeBtn = stripeLink
-    ? '<a href="' + stripeLink + '" class="btn primary" style="width:100%;justify-content:center">Upgrade to Pro</a>'
-    : '<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center">Coming soon</div>';
+  const tier = (name, key, price, mins, extraLine) => {
+    const isCurrent = currentPlan === key;
+    const btn = isCurrent
+      ? '<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center">Current plan</div>'
+      : (stripeLink ? '<a href="' + stripeLink + '" class="btn primary" style="width:100%;justify-content:center">Upgrade</a>' : '<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center">Coming soon</div>');
+    return '<div class="biz-card" style="padding:28px;display:block' + (isCurrent ? ';border-color:rgba(255,255,255,0.25)' : '') + '">' +
+      '<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.4);margin-bottom:10px">' + name + '</div>' +
+      '<div style="font-size:28px;font-weight:300;font-family:monospace;margin-bottom:4px">$' + price + '<span style="font-size:13px;color:rgba(255,255,255,0.3)">/mo</span></div>' +
+      '<div style="font-size:12px;color:rgba(255,255,255,0.3);margin-bottom:22px">' + extraLine + '</div>' +
+      '<div style="font-size:13px;color:rgba(255,255,255,0.7);line-height:2.1">1 business<br>' + mins + ' minutes / month included<br>Unlimited leads<br>Full conversation transcripts</div>' +
+      '<div style="margin-top:22px">' + btn + '</div></div>';
+  };
   const content = `<div class="page-title">Billing</div><div class="page-sub">PLAN AND USAGE</div>
-<div style="max-width:760px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
-<div class="biz-card" style="padding:28px;display:block">
-<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.3);margin-bottom:10px">Free</div>
-<div style="font-size:30px;font-weight:300;font-family:monospace;margin-bottom:4px">$0</div>
-<div style="font-size:12px;color:rgba(255,255,255,0.3);margin-bottom:24px">forever</div>
-<div style="font-size:13px;color:rgba(255,255,255,0.6);line-height:2.2">1 business<br>30 minutes / month included<br>Unlimited leads<br>Community support</div>
-<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center;margin-top:24px">Current plan</div>
-</div>
-<div class="biz-card" style="padding:28px;display:block;border-color:rgba(255,255,255,0.25)">
-<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:monospace;color:rgba(255,255,255,0.5);margin-bottom:10px">Pro</div>
-<div style="font-size:30px;font-weight:300;font-family:monospace;margin-bottom:4px">$39<span style="font-size:14px;color:rgba(255,255,255,0.3)">/mo</span></div>
-<div style="font-size:12px;color:rgba(255,255,255,0.3);margin-bottom:24px">$0.20/min after included minutes</div>
-<div style="font-size:13px;color:rgba(255,255,255,0.75);line-height:2.2">1 business<br>300 minutes / month included<br>Unlimited leads<br>Priority support</div>
-<div style="margin-top:24px">${upgradeBtn}</div>
-</div>
+${usageHTML}
+<div style="max-width:900px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+${tier('Starter', 'starter', 59, 150, 'For calls a few times a day')}
+${tier('Growth', 'growth', 129, 400, 'For busy small businesses')}
+${tier('Pro', 'pro', 249, 1000, 'For high call volume')}
 </div>`;
   res.send(layout('billing', content));
 });
