@@ -185,24 +185,68 @@ app.get('/logout', (req, res) => {
   res.redirect('/login');
 });
 
+// LOCATION AUTOCOMPLETE — OpenStreetMap Nominatim, free, no API key
+app.get('/api/location-search', async (req, res) => {
+  const q = req.query.q || '';
+  if (q.length < 3) return res.json([]);
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q), {
+      headers: { 'User-Agent': 'AtlaReceptionist/1.0 (contact.sanjupv@gmail.com)' }
+    });
+    const results = await r.json();
+    res.json(results.map(r => r.display_name));
+  } catch (e) {
+    console.log('Location search failed:', e.message);
+    res.json([]);
+  }
+});
+
+// WEBSITE AUTO-FILL — fetches a business's site and pulls out visible text
+app.get('/api/fetch-website', async (req, res) => {
+  let url = req.query.url || '';
+  if (!url) return res.json({ error: 'No URL provided' });
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AtlaReceptionist/1.0)' } });
+    const html = await r.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1500);
+    res.json({ text });
+  } catch (e) {
+    console.log('Website fetch failed:', e.message);
+    res.json({ error: 'Could not read that website' });
+  }
+});
+
 // ONBOARDING
 app.get('/onboard', (req, res) => {
   const isLoggedIn = !!getOwner(req);
   const back = isLoggedIn ? '<a href="/dashboard" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;font-family:monospace;letter-spacing:1px;color:rgba(255,255,255,0.3);margin-bottom:32px">← Back</a>' : '';
   const errorMsg = req.query.error ? '<div class="err">' + req.query.error + '</div>' : '';
-  res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up</title><style>${CSS}</style></head>
+  res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up</title><style>${CSS}.autocomplete-wrap{position:relative}.autocomplete-list{position:absolute;top:100%;left:0;right:0;background:#151515;border:0.5px solid rgba(255,255,255,0.15);border-radius:4px;margin-top:4px;max-height:220px;overflow-y:auto;z-index:50;display:none}.autocomplete-item{padding:10px 14px;font-size:13px;color:rgba(255,255,255,0.7);cursor:pointer}.autocomplete-item:hover{background:rgba(255,255,255,0.06);color:#fff}.website-row{display:flex;gap:10px;align-items:flex-end}.website-row .field{flex:1;margin-bottom:0}</style></head>
 <body><div style="max-width:560px;margin:0 auto;padding:48px 24px">
 <div class="logo" style="margin-bottom:44px"><div class="dot"></div><div class="dot-sm"></div><div class="dot-sm"></div><span class="logo-text">AI Receptionist</span></div>
 ${back}
 <h1 style="font-size:24px;font-weight:400;color:#fff;margin-bottom:8px">Set up your receptionist</h1>
 <p style="font-size:13px;color:rgba(255,255,255,0.35);margin-bottom:40px;line-height:1.6">Tell us about your business. Your AI uses this to answer every call intelligently.</p>
 ${errorMsg}
+<div class="field website-row">
+  <div class="field"><label>Have a website? (optional)</label><input type="text" id="websiteUrl" placeholder="yourbusiness.com"></div>
+  <button type="button" id="fillFromSite" class="btn" style="height:44px">Fill from website</button>
+</div>
+<div id="fillStatus" style="font-size:11px;color:rgba(255,255,255,0.3);margin:-14px 0 20px"></div>
 <form method="POST" action="/onboard">
 <div class="field"><label>Business name <span class="req">*</span></label><input type="text" name="businessName" required placeholder=""></div>
-<div class="field"><label>What does your business do? <span class="req">*</span></label><textarea name="businessDescription" required rows="3" placeholder=""></textarea></div>
+<div class="field"><label>What does your business do? <span class="req">*</span></label><textarea name="businessDescription" id="businessDescription" required rows="3" placeholder=""></textarea></div>
 <div class="row2">
 <div class="field"><label>Opening & Closing hours <span class="req">*</span></label><input type="text" name="hours" required placeholder="9 AM - 8 PM, Mon-Sat"></div>
-<div class="field"><label>Location</label><input type="text" name="location" placeholder=""></div>
+<div class="field autocomplete-wrap"><label>Location</label><input type="text" name="location" id="locationInput" autocomplete="off" placeholder=""><div class="autocomplete-list" id="locationList"></div></div>
 </div>
 <hr><div class="sec-lbl">Services and pricing</div>
 <div class="field"><label>Services you offer</label><textarea name="services" rows="2" placeholder=""></textarea><p class="hint">The AI uses this to confirm what you do and don't offer</p></div>
@@ -212,7 +256,44 @@ ${errorMsg}
 <hr><div class="sec-lbl">FAQs</div>
 <div class="field"><label>Common questions and answers</label><textarea name="faqs" rows="5" placeholder=""></textarea><p class="hint">The AI answers these directly on the call</p></div>
 <button class="submit-btn" type="submit">Create my receptionist</button>
-</form></div></body></html>`);
+</form>
+<script>
+document.getElementById('fillFromSite').addEventListener('click', async function() {
+  const url = document.getElementById('websiteUrl').value.trim();
+  const status = document.getElementById('fillStatus');
+  if (!url) { status.textContent = 'Enter a website URL first'; return; }
+  status.textContent = 'Reading website...';
+  try {
+    const r = await fetch('/api/fetch-website?url=' + encodeURIComponent(url));
+    const data = await r.json();
+    if (data.error) { status.textContent = data.error; return; }
+    document.getElementById('businessDescription').value = data.text;
+    status.textContent = 'Filled in - review and trim before submitting';
+  } catch (e) {
+    status.textContent = 'Could not read that website';
+  }
+});
+let locTimer;
+const locInput = document.getElementById('locationInput');
+const locList = document.getElementById('locationList');
+locInput.addEventListener('input', function() {
+  clearTimeout(locTimer);
+  const q = locInput.value;
+  if (q.length < 3) { locList.style.display = 'none'; return; }
+  locTimer = setTimeout(async function() {
+    const r = await fetch('/api/location-search?q=' + encodeURIComponent(q));
+    const results = await r.json();
+    if (!results.length) { locList.style.display = 'none'; return; }
+    locList.innerHTML = results.map(function(name) { return '<div class="autocomplete-item">' + name + '</div>'; }).join('');
+    locList.style.display = 'block';
+    Array.from(locList.children).forEach(function(item, i) {
+      item.addEventListener('click', function() { locInput.value = results[i]; locList.style.display = 'none'; });
+    });
+  }, 350);
+});
+document.addEventListener('click', function(e) { if (e.target !== locInput) locList.style.display = 'none'; });
+</script>
+</div></body></html>`);
 });
 
 app.post('/onboard', async (req, res) => {
@@ -364,20 +445,26 @@ app.get('/settings', (req, res) => {
 app.get('/billing', async (req, res) => {
   const ownerId = getOwner(req);
   if (!ownerId) return res.redirect('/login');
-  const { data: biz } = await supabase.from('businesses').select('id,business_name,plan,minutes_used_this_month').eq('owner_id', ownerId).order('created_at', { ascending: false }).limit(1).single();
-  const currentPlan = biz ? (biz.plan || 'starter') : 'starter';
-  const used = biz ? (biz.minutes_used_this_month || 0) : 0;
-  const limit = planLimitMinutes(currentPlan);
-  const pct = Math.min(100, Math.round((used / limit) * 100));
-  const usageHTML = biz ? `
-<div class="biz-card" style="padding:24px;margin-bottom:20px;display:block;max-width:400px">
-<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-size:13px;color:rgba(255,255,255,0.6)">${planLabel(currentPlan)} plan</div><div style="font-size:12px;font-family:monospace;color:rgba(255,255,255,0.4)">${used.toFixed(1)} / ${limit} min used</div></div>
+  const { data: bizList } = await supabase.from('businesses').select('id,business_name,plan,minutes_used_this_month').eq('owner_id', ownerId).order('created_at', { ascending: false });
+  const businesses = bizList || [];
+  const usageHTML = businesses.length === 0
+    ? '<div class="empty" style="max-width:400px;margin-bottom:20px">No business yet - create one to start tracking usage.</div>'
+    : businesses.map(biz => {
+        const plan = biz.plan || 'starter';
+        const used = biz.minutes_used_this_month || 0;
+        const limit = planLimitMinutes(plan);
+        const pct = Math.min(100, Math.round((used / limit) * 100));
+        return `<div class="biz-card" style="padding:24px;margin-bottom:14px;display:block;max-width:460px">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px"><div style="font-size:14px;font-weight:500">${biz.business_name}</div><div style="font-size:11px;font-family:monospace;color:rgba(255,255,255,0.35)">${planLabel(plan).toUpperCase()}</div></div>
+<div style="font-size:12px;font-family:monospace;color:rgba(255,255,255,0.4);margin-bottom:10px">${used.toFixed(1)} / ${limit} min used</div>
 <div style="height:6px;border-radius:3px;background:rgba(255,255,255,0.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:${pct>=100?'rgba(255,107,107,0.7)':'rgba(255,255,255,0.5)'}"></div></div>
 <div style="font-size:11px;color:rgba(255,255,255,0.25);margin-top:8px">Resets on the 1st of each month${pct>=100?' · calls are currently paused until reset or upgrade':''}</div>
-</div>` : '<div class="empty" style="max-width:400px;margin-bottom:20px">No business yet - create one to start tracking usage.</div>';
+</div>`;
+      }).join('');
+  const singleCurrentPlan = businesses.length === 1 ? (businesses[0].plan || 'starter') : null;
   const stripeLink = process.env.STRIPE_PAYMENT_LINK || '';
   const tier = (name, key, price, mins, extraLine) => {
-    const isCurrent = currentPlan === key;
+    const isCurrent = singleCurrentPlan === key;
     const btn = isCurrent
       ? '<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center">Current plan</div>'
       : (stripeLink ? '<a href="' + stripeLink + '" class="btn primary" style="width:100%;justify-content:center">Upgrade</a>' : '<div class="btn" style="cursor:default;opacity:0.5;width:100%;justify-content:center">Coming soon</div>');
@@ -390,7 +477,7 @@ app.get('/billing', async (req, res) => {
   };
   const content = `<div class="page-title">Billing</div><div class="page-sub">PLAN AND USAGE</div>
 ${usageHTML}
-<div style="max-width:900px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+<div style="max-width:900px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:20px">
 ${tier('Starter', 'starter', 59, 150, 'For calls a few times a day')}
 ${tier('Growth', 'growth', 129, 400, 'For busy small businesses')}
 ${tier('Pro', 'pro', 249, 1000, 'For high call volume')}
@@ -457,7 +544,7 @@ app.get('/', (req, res) => {
 </div>
 <div class="for-who">
   <div class="for-who-label">Built for owner-operated businesses</div>
-  <div class="tags"><span class="tag">Salons</span><span class="tag">Gyms</span><span class="tag">Bike shops</span><span class="tag">Dental clinics</span><span class="tag">Home services</span><span class="tag">Real estate</span></div>
+  <div class="tags"><span class="tag">Salons</span><span class="tag">Gyms</span><span class="tag">Car dealerships</span><span class="tag">Dental clinics</span><span class="tag">Home services</span><span class="tag">Real estate</span></div>
 </div>
 </body></html>`;
   res.send(content);
