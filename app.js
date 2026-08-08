@@ -10,6 +10,26 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+
+// Simple in-memory rate limiter — no extra package needed
+const rateLimitMap = new Map();
+function isRateLimited(key, maxRequests, windowMs) {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key) || { count: 0, resetAt: now + windowMs };
+  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + windowMs; }
+  entry.count++;
+  rateLimitMap.set(key, entry);
+  return entry.count > maxRequests;
+}
+function rateLimitMiddleware(maxRequests, windowMs) {
+  return (req, res, next) => {
+    if (isRateLimited(req.ip, maxRequests, windowMs)) {
+      console.log('Rate limited:', req.ip, req.path);
+      return res.status(429).send('Too many requests');
+    }
+    next();
+  };
+}
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY);
 
 async function getBusinessForNumber(num) {
@@ -186,7 +206,7 @@ app.get('/logout', (req, res) => {
 });
 
 // LOCATION AUTOCOMPLETE — OpenStreetMap Nominatim, free, no API key
-app.get('/api/location-search', async (req, res) => {
+app.get('/api/location-search', rateLimitMiddleware(30, 60000), async (req, res) => {
   const q = req.query.q || '';
   if (q.length < 3) return res.json([]);
   try {
@@ -202,7 +222,7 @@ app.get('/api/location-search', async (req, res) => {
 });
 
 // WEBSITE AUTO-FILL — fetches a business's site and pulls out visible text
-app.get('/api/fetch-website', async (req, res) => {
+app.get('/api/fetch-website', rateLimitMiddleware(10, 60000), async (req, res) => {
   let url = req.query.url || '';
   if (!url) return res.json({ error: 'No URL provided' });
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
@@ -424,9 +444,27 @@ app.get('/businesses', async (req, res) => {
   const businesses = bizList || [];
   const cards = businesses.length === 0
     ? '<div class="empty">No businesses yet. <a href="/onboard">Create your first one</a></div>'
-    : businesses.map(b => `<div class="biz-card" style="margin-bottom:12px;display:block;padding:24px"><div style="display:flex;justify-content:space-between;align-items:flex-start"><div><div style="font-size:16px;font-weight:500;margin-bottom:6px">${b.business_name}</div><div style="font-size:11px;font-family:monospace;color:rgba(255,255,255,0.3);margin-bottom:12px">${b.phone_number||'No phone number connected yet'}</div><div class="status ${b.phone_number?'':'pending'}"><div class="status-dot"></div>${b.phone_number?'Live':'Pending number connection'}</div></div><div style="text-align:right"><div style="font-size:11px;font-family:monospace;color:rgba(255,255,255,0.2)">Created</div><div style="font-size:12px;font-family:monospace;color:rgba(255,255,255,0.35)">${new Date(b.created_at).toLocaleDateString()}</div></div></div>${b.business_description?'<div style="margin-top:16px;font-size:13px;color:rgba(255,255,255,0.4);border-top:0.5px solid rgba(255,255,255,0.06);padding-top:16px">'+b.business_description+'</div>':''}</div>`).join('');
+    : businesses.map(b => `<div class="biz-card" style="margin-bottom:12px;display:block;padding:24px"><div style="display:flex;justify-content:space-between;align-items:flex-start"><div><div style="font-size:16px;font-weight:500;margin-bottom:6px">${b.business_name}</div><div style="font-size:11px;font-family:monospace;color:rgba(255,255,255,0.3);margin-bottom:12px">${b.phone_number||'No phone number connected yet'}</div><div class="status ${b.phone_number?'':'pending'}"><div class="status-dot"></div>${b.phone_number?'Live':'Pending number connection'}</div></div><div style="text-align:right">${b.phone_number ? '<form method="POST" action="/businesses/'+b.id+'/test-call" style="margin-bottom:8px"><button type="submit" class="btn">Test call me</button></form>' : ''}<div style="font-size:11px;font-family:monospace;color:rgba(255,255,255,0.2)">Created</div><div style="font-size:12px;font-family:monospace;color:rgba(255,255,255,0.35)">${new Date(b.created_at).toLocaleDateString()}</div></div></div>${b.business_description?'<div style="margin-top:16px;font-size:13px;color:rgba(255,255,255,0.4);border-top:0.5px solid rgba(255,255,255,0.06);padding-top:16px">'+b.business_description+'</div>':''}</div>`).join('');
   const content = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:32px"><div><div class="page-title">Businesses</div><div class="page-sub">${businesses.length} TOTAL</div></div><a href="/onboard" class="btn primary">+ Add business</a></div>${cards}`;
   res.send(layout('businesses', content));
+});
+
+app.post('/businesses/:id/test-call', rateLimitMiddleware(5, 60000), async (req, res) => {
+  const ownerId = getOwner(req);
+  if (!ownerId) return res.redirect('/login');
+  const { data: biz } = await supabase.from('businesses').select('*').eq('id', req.params.id).eq('owner_id', ownerId).single();
+  if (!biz || !biz.phone_number || !biz.notification_phone) return res.redirect('/businesses');
+  try {
+    await twilioClient.calls.create({
+      to: biz.notification_phone,
+      from: biz.phone_number,
+      url: 'https://' + req.headers.host + '/voice'
+    });
+    console.log('Test call placed to', biz.notification_phone, 'for', biz.business_name);
+  } catch (e) {
+    console.log('Test call failed:', e.message);
+  }
+  res.redirect('/businesses');
 });
 
 // SETTINGS
@@ -486,7 +524,14 @@ ${tier('Pro', 'pro', 249, 1000, 'For high call volume')}
 });
 
 // VOICE AGENT — Twilio Media Streams bridged to Deepgram Voice Agent
-app.post('/voice', async (req, res) => {
+app.post('/voice', rateLimitMiddleware(20, 60000), async (req, res) => {
+  const twilioSignature = req.headers['x-twilio-signature'];
+  const fullUrl = 'https://' + req.headers.host + req.originalUrl;
+  const validRequest = twilio.validateRequest(process.env.TWILIO_AUTH_TOKEN, twilioSignature, fullUrl, req.body);
+  if (!validRequest) {
+    console.log('Rejected /voice request - invalid Twilio signature');
+    return res.status(403).send('Forbidden');
+  }
   const business = await getBusinessForNumber(req.body.To);
   if (business.id) {
     await resetUsageIfNewMonth(business);
@@ -503,6 +548,7 @@ app.post('/voice', async (req, res) => {
   const connect = twiml.connect();
   const stream = connect.stream({ url: 'wss://' + req.headers.host + '/twilio-stream' });
   stream.parameter({ name: 'to', value: req.body.To });
+  stream.parameter({ name: 'secret', value: process.env.STREAM_SECRET || '' });
   res.type('text/xml').send(twiml.toString());
 });
 
@@ -554,7 +600,13 @@ const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => console.log('App running on port ' + PORT));
 
 const wss = new WebSocketServer({ server, path: '/twilio-stream' });
-wss.on('connection', (twilioWs) => {
+wss.on('connection', (twilioWs, req) => {
+  const ip = req.socket.remoteAddress || 'unknown';
+  if (isRateLimited(ip, 20, 60000)) {
+    console.log('Rate limited stream connection from', ip);
+    twilioWs.close();
+    return;
+  }
   console.log('Twilio stream connected');
   let streamSid = null;
   let business = null;
@@ -651,6 +703,13 @@ wss.on('connection', (twilioWs) => {
     try {
       const data = JSON.parse(msg);
       if (data.event === 'start') {
+        const receivedSecret = data.start.customParameters?.secret;
+        if (!process.env.STREAM_SECRET || receivedSecret !== process.env.STREAM_SECRET) {
+          console.log('Rejected stream connection - invalid or missing secret');
+          dgWs.close();
+          twilioWs.close();
+          return;
+        }
         streamSid = data.start.streamSid;
         callSid = data.start.callSid;
         callStartTime = Date.now();
